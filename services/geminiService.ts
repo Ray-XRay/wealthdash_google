@@ -1,22 +1,32 @@
 import { GoogleGenAI } from "@google/genai";
 import { Account, Currency } from '../types';
 
-// Initialize Gemini AI
-// The API key must be obtained exclusively from the environment variable process.env.API_KEY.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Helper to safely get the AI instance. 
+// We do not initialize it at the top level to prevent runtime crashes if env vars are missing during module load.
+const getAiClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    console.warn("API_KEY is missing. AI features will be disabled.");
+    return null;
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
 export const fetchExchangeRate = async (): Promise<number | null> => {
   try {
+    const ai = getAiClient();
+    if (!ai) return null;
+
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: "What is the current exchange rate for 1 CNY to HKD? Return ONLY the numeric value (e.g., 1.08).",
+      contents: "What is the current exchange rate for 1 CNY to HKD? Return ONLY the numeric value (e.g. 1.08).",
       config: {
         tools: [{ googleSearch: {} }]
       }
     });
     
     const text = response.text?.trim() || '';
-    // Extract the first valid floating point number from the text to handle extra words from search results
+    // Extract the first valid floating point number
     const match = text.match(/(\d+\.\d+)/);
     const rate = match ? parseFloat(match[0]) : parseFloat(text);
     
@@ -28,6 +38,9 @@ export const fetchExchangeRate = async (): Promise<number | null> => {
 };
 
 export const analyzePortfolio = async (accounts: Account[], totalHKD: number): Promise<string> => {
+  const ai = getAiClient();
+  if (!ai) return "AI Analysis service is unavailable (API Key missing).";
+
   const accountsSummary = accounts.map(a => 
     `- ${a.name} (${a.type}): ${a.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${a.currency}`
   ).join('\n');
