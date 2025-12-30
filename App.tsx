@@ -22,8 +22,8 @@ import { ExcelGenerator } from './components/ExcelGenerator';
 
 // Initial assumed rate
 const DEFAULT_RATE = 1.08; 
-// Updated key to v6 
-const STORAGE_KEY = 'wealthdash_data_user_v6';
+// Updated key to v7 to reset data for the user
+const STORAGE_KEY = 'wealthdash_data_user_v7';
 
 const App: React.FC = () => {
   // --- STATE ---

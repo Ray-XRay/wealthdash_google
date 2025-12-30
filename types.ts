@@ -19,5 +19,5 @@ export interface Account {
   icon?: string;
 }
 
-// Initialize with empty array as requested
+// Start with an empty list so the user sees the "Import" welcome screen
 export const INITIAL_ACCOUNTS: Account[] = [];
