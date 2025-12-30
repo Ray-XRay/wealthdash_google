@@ -13,7 +13,8 @@ import {
   Sparkles,
   ArrowRight,
   TrendingUp,
-  CreditCard
+  CreditCard,
+  Upload // Added Upload icon
 } from 'lucide-react';
 import { Account, AccountType, Currency, INITIAL_ACCOUNTS } from './types';
 import { fetchExchangeRate, analyzePortfolio } from './services/geminiService';
@@ -339,15 +340,32 @@ const App: React.FC = () => {
             {/* LEFT: CHART (8/12) */}
             <div className="lg:col-span-8">
                 {accounts.length === 0 ? (
-                   <div className="bg-white rounded-3xl border-2 border-dashed border-slate-300 p-12 flex flex-col items-center justify-center text-center h-[420px]">
-                       <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mb-6 animate-bounce">
-                           <Plus size={32} />
-                       </div>
-                       <h3 className="text-xl font-bold text-slate-800 mb-2">Welcome to WealthDash</h3>
-                       <p className="text-slate-500 mb-6 max-w-md">Start by adding your first asset on the right, or use the tool below to import data.</p>
-                       <button onClick={() => setIsExcelGeneratorOpen(true)} className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-emerald-200 hover:bg-emerald-700 transition-all active:scale-95">
-                           <FileSpreadsheet size={18} /> Import Excel File
-                       </button>
+                   <div className="h-[420px] bg-white/80 backdrop-blur-xl rounded-3xl border border-white/20 shadow-xl flex flex-col items-center justify-center p-8 text-center relative overflow-hidden group">
+                        <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-blue-50/50 to-emerald-50/50 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
+                        <div className="relative z-10 max-w-md w-full flex flex-col items-center">
+                            <div className="w-20 h-20 bg-white rounded-2xl shadow-lg border border-slate-100 flex items-center justify-center mb-6 transform group-hover:scale-110 transition-transform duration-300">
+                                <FileSpreadsheet className="text-emerald-500" size={40} />
+                            </div>
+                            <h3 className="text-2xl font-bold text-slate-800 mb-3">Visualize Your Wealth</h3>
+                            <p className="text-slate-500 mb-8 leading-relaxed max-w-xs mx-auto">
+                                Upload your asset spreadsheet to instantly generate charts, or use the Quick Add form.
+                            </p>
+
+                            <button
+                                onClick={() => setIsExcelGeneratorOpen(true)}
+                                className="w-full sm:w-auto px-8 py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-lg shadow-lg shadow-emerald-200/50 transition-all hover:-translate-y-1 flex items-center justify-center gap-3 group/btn"
+                            >
+                                <Upload size={20} />
+                                <span>Import Excel Data</span>
+                                <ArrowRight size={18} className="opacity-70 group-hover/btn:translate-x-1 transition-transform"/>
+                            </button>
+
+                            <div className="mt-8 flex items-center justify-center gap-4 text-xs text-slate-400 font-medium uppercase tracking-widest w-full">
+                                <span className="h-px w-12 bg-slate-200"></span>
+                                <span>Or add manually</span>
+                                <span className="h-px w-12 bg-slate-200"></span>
+                            </div>
+                        </div>
                    </div>
                 ) : (
                    <div className="h-full">
