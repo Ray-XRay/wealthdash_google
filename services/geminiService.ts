@@ -9,11 +9,17 @@ export const fetchExchangeRate = async (): Promise<number | null> => {
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: "What is the current exchange rate for 1 CNY to HKD? Return ONLY the numeric value (e.g., 1.08). Do not include text.",
+      contents: "What is the current exchange rate for 1 CNY to HKD? Return ONLY the numeric value (e.g., 1.08).",
+      config: {
+        tools: [{ googleSearch: {} }]
+      }
     });
     
-    const text = response.text?.trim();
-    const rate = parseFloat(text || '');
+    const text = response.text?.trim() || '';
+    // Extract the first valid floating point number from the text to handle extra words from search results
+    const match = text.match(/(\d+\.\d+)/);
+    const rate = match ? parseFloat(match[0]) : parseFloat(text);
+    
     return isNaN(rate) ? null : rate;
   } catch (error) {
     console.error("Failed to fetch exchange rate via AI:", error);
