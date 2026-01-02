@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { Account, Currency, AccountType, Transaction, ExpenseCategory } from '../types';
 
 const getAiClient = () => {
@@ -143,63 +143,85 @@ export const smartParseDocument = async (base64Images: string[]): Promise<SmartP
   }));
 
   const prompt = `
-    Analyze these statement images carefully. I need you to extract two things:
-    1. A list of ALL distinct sub-accounts or asset breakdowns found (Name, Balance, Currency, Account Type).
-    2. The List of Transactions (Date, Description, Amount, Category).
+    You are an expert Financial Auditor specializing in Hong Kong banking documents (HSBC, BOCHK, Mox, ZA Bank, Futu, Longbridge). 
+    Analyze the provided statement images.
+    
+    ## TASK 1: Extract Accounts/Assets
+    Identify the *current ending balance* of the account.
+    - Look for keywords: "Ending Balance", "Closing Balance", "Net Assets", "Portfolio Value", "结余", "总资产", "账户余额", "Account Balance".
+    - **IGNORE**: "Total Deposits", "Total Credits", "Available Limit", "Loan Balance", "Balance Brought Forward", "上期结余".
+    - If multiple currencies exist (e.g. HKD Savings, USD Savings), list them as separate accounts.
 
-    **CRITICAL RULE FOR INTEGRATED ACCOUNTS:**
-    - If the statement shows a breakdown like "Deposits/Savings" AND "Investments/Equities", **YOU MUST CREATE SEPARATE ACCOUNTS**.
+    ## TASK 2: Extract Transactions
+    List every single transaction row found.
+    - **Logic for Amount**: 
+      - If one column: Signs usually indicate direction (- for debit, + for credit).
+      - If two columns (Debit/Credit or Withdrawal/Deposit or 支出/存入): 
+        - Amount = Deposit - Withdrawal.
+        - OR Amount = Credit - Debit.
+        - Result: Spending must be NEGATIVE. Income must be POSITIVE.
+    - **Ignore rows**: "B/F", "Balance Brought Forward", "Total", "Subtotal", "承上页", "转下页".
+
+    ## Categorization Rules
+    - Dining: Restaurant, Foodpanda, Deliveroo, McDonald, Cafe, 餐厅, 餐饮.
+    - Transport: Uber, Taxi, KMB, MTR, Bus, Tunnel, Parking, 交通, 车费.
+    - Groceries: ParknShop, Wellcome, AEON, Market, Supermarket, 7-Eleven, Circle K, 超市.
+    - Investment: Futu, Tiger, Longbridge, Stock, Securities, Subscription, 证券, 股票.
+    - Transfer: FPS, Transfer, P2P, 转账.
     
-    **Currency Identification:**
-    - Look for symbols and codes: HKD ($), CNY/RMB (¥), USD (US$), JPY (JP¥/円), EUR (€), GBP (£), etc.
-    - **Important:** '¥' can be CNY or JPY. If the context implies Japan (e.g. 'Yen', 'JPY'), use 'JPY'. If China/RMB, use 'CNY'.
-    
-    **Account Type Identification:**
-    - "Investments", "Equities", "Stocks", "Futu", "Tiger", "Longbridge", "IBKR" -> **'Investment'**
-    - "PayMe", "Alipay", "WeChat", "Octopus", "Mox", "ZA Bank" -> **'Digital Wallet'**
-    - "Deposits", "Savings", "Current", "HSBC", "BOC", "Hang Seng" -> **'Bank'**
-    
-    **Transaction Categories:**
-    - "Transfer to Futu/Securities", "Stock Buy" -> **'Investment'**
-    - "Octopus", "KMB", "MTR", "Taxi", "Uber" -> 'Transport'
-    - "Deliveroo", "Foodpanda", "Restaurant" -> 'Dining'
-    - "ParknShop", "Wellcome", "Supermarket" -> 'Groceries'
-    - "Bills", "HKBN", "Electric" -> 'Utilities'
-    
-    **Return ONLY a JSON object:**
-    {
-      "accounts": [
-        {
-          "name": "Account Name",
-          "balance": 12345.67, 
-          "currency": "One of ['HKD', 'CNY', 'USD', 'JPY', 'EUR', 'GBP', 'AUD', 'CAD', 'SGD']",
-          "type": "One of ['Bank', 'Investment', 'Digital Wallet', 'Personal/Other']"
-        }
-      ],
-      "transactions": [
-        {
-          "date": "YYYY-MM-DD",
-          "description": "Merchant",
-          "category": "ExpenseCategory",
-          "amount": -100.00
-        }
-      ]
-    }
-    
-    If no accounts found, set "accounts": [].
+    ## Currency Detection
+    - Symbols: '$' is HKD unless context says USD/AUD/CAD.
+    - '¥' is CNY (RMB) unless context says JPY.
+
   `;
 
   parts.push({ text: prompt });
 
+  const responseSchema: Schema = {
+    type: Type.OBJECT,
+    properties: {
+      accounts: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            name: { type: Type.STRING, description: "Account Name e.g. HSBC Savings" },
+            balance: { type: Type.NUMBER, description: "Current ending balance" },
+            currency: { type: Type.STRING, description: "HKD, CNY, USD, etc." },
+            type: { type: Type.STRING, description: "Bank, Investment, Wallet, Other" },
+          },
+          required: ["name", "balance", "currency", "type"]
+        }
+      },
+      transactions: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            date: { type: Type.STRING, description: "YYYY-MM-DD" },
+            description: { type: Type.STRING },
+            category: { type: Type.STRING },
+            amount: { type: Type.NUMBER, description: "Negative for expense, Positive for income" },
+          },
+          required: ["date", "description", "amount"]
+        }
+      }
+    },
+    required: ["accounts", "transactions"]
+  };
+
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-3-pro-preview', 
       contents: { parts },
-      config: { responseMimeType: "application/json" }
+      config: { 
+        responseMimeType: "application/json",
+        responseSchema: responseSchema,
+        thinkingConfig: { thinkingBudget: 4096 } 
+      }
     });
 
-    let jsonText = response.text || "{}";
-    jsonText = jsonText.replace(/```json\n?|\n?```/g, '').trim();
+    const jsonText = response.text || "{}";
     const data = JSON.parse(jsonText);
     
     // Process Accounts
@@ -207,17 +229,10 @@ export const smartParseDocument = async (base64Images: string[]): Promise<SmartP
     if (Array.isArray(data.accounts)) {
         processedAccounts = data.accounts.map((acc: any) => ({
             name: acc.name || "Unknown Account",
-            balance: typeof acc.balance === 'number' ? acc.balance : parseFloat(acc.balance) || 0,
+            balance: acc.balance || 0,
             currency: (Object.values(Currency).includes(acc.currency) ? acc.currency : Currency.HKD),
             type: (Object.values(AccountType).includes(acc.type) ? acc.type : AccountType.BANK) as AccountType
         })).filter((a: any) => a.balance !== 0);
-    } else if (data.account && typeof data.account.balance === 'number') {
-        processedAccounts.push({
-            name: data.account.name || "Unknown Account",
-            balance: data.account.balance,
-            currency: (Object.values(Currency).includes(data.account.currency) ? data.account.currency : Currency.HKD),
-            type: (Object.values(AccountType).includes(data.account.type) ? data.account.type : AccountType.BANK) as AccountType
-        });
     }
 
     // Process Transactions
@@ -228,7 +243,7 @@ export const smartParseDocument = async (base64Images: string[]): Promise<SmartP
             date: t.date || new Date().toISOString().split('T')[0],
             description: t.description || "Unknown",
             category: Object.values(ExpenseCategory).includes(t.category) ? t.category : ExpenseCategory.OTHER,
-            amount: typeof t.amount === 'number' ? t.amount : parseFloat(t.amount) || 0
+            amount: t.amount || 0
         }));
     }
 
@@ -236,6 +251,6 @@ export const smartParseDocument = async (base64Images: string[]): Promise<SmartP
 
   } catch (error) {
     console.error("Smart parsing failed:", error);
-    throw new Error("Could not analyze the document. Please try a clearer image.");
+    throw new Error("Could not analyze the document. Please ensure the image is clear.");
   }
 };

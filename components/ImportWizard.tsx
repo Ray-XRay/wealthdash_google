@@ -130,7 +130,8 @@ export const ImportWizard: React.FC<ImportWizardProps> = ({ onClose, onImportSma
       for (let i = 1; i <= maxPages; i++) {
           setStatusMessage(`Scanning page ${i}/${maxPages}...`);
           const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: 2.0 });
+          // Scale increased to 3.0 for better text recognition
+          const viewport = page.getViewport({ scale: 3.0 });
           const canvas = document.createElement('canvas');
           const context = canvas.getContext('2d');
           canvas.height = viewport.height;
