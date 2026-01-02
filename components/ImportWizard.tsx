@@ -130,15 +130,16 @@ export const ImportWizard: React.FC<ImportWizardProps> = ({ onClose, onImportSma
       for (let i = 1; i <= maxPages; i++) {
           setStatusMessage(`Scanning page ${i}/${maxPages}...`);
           const page = await pdf.getPage(i);
-          // Scale increased to 3.0 for better text recognition
-          const viewport = page.getViewport({ scale: 3.0 });
+          // Scale 2.0 is sufficient for text and keeps payload size manageable
+          const viewport = page.getViewport({ scale: 2.0 });
           const canvas = document.createElement('canvas');
           const context = canvas.getContext('2d');
           canvas.height = viewport.height;
           canvas.width = viewport.width;
           if (context) {
               await page.render({ canvasContext: context, viewport } as any).promise;
-              images.push(canvas.toDataURL('image/png'));
+              // Use JPEG with 0.8 quality to drastically reduce size compared to PNG
+              images.push(canvas.toDataURL('image/jpeg', 0.8));
           }
       }
       return images;
@@ -176,7 +177,7 @@ export const ImportWizard: React.FC<ImportWizardProps> = ({ onClose, onImportSma
         }
         setIsProcessing(false);
     } catch (err: any) {
-        console.error("Import error:", err);
+        console.error("Import error details:", err);
         setErrorMsg(err.message || "Failed to process file.");
         setIsProcessing(false);
     }

@@ -137,7 +137,7 @@ export const smartParseDocument = async (base64Images: string[]): Promise<SmartP
 
   const parts: any[] = base64Images.map(b64 => ({
     inlineData: {
-      mimeType: 'image/png',
+      mimeType: 'image/jpeg',
       data: b64.replace(/^data:image\/\w+;base64,/, '')
     }
   }));
@@ -249,8 +249,10 @@ export const smartParseDocument = async (base64Images: string[]): Promise<SmartP
 
     return { accounts: processedAccounts, transactions: processedTransactions };
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Smart parsing failed:", error);
-    throw new Error("Could not analyze the document. Please ensure the image is clear.");
+    // Directly propagate the error message to the UI
+    const errorDetails = error.message || error.toString();
+    throw new Error(`${errorDetails}`);
   }
 };
