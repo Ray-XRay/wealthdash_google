@@ -1,33 +1,56 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Wallet, 
   Plus, 
   Trash2, 
   BrainCircuit, 
   ArrowRightLeft,
-  X,
+  X, 
   Edit3, 
-  PieChart as PieChartIcon,
-  FileSpreadsheet,
   RotateCcw,
   Sparkles,
   ArrowRight,
-  TrendingUp,
   CreditCard,
-  Upload // Added Upload icon
+  Upload, 
+  FileSpreadsheet,
+  Receipt,
+  LayoutDashboard,
+  Landmark,
+  Banknote,
+  TrendingUp,
+  Coins,
+  Globe,
+  RefreshCcw,
+  Loader2
 } from 'lucide-react';
-import { Account, AccountType, Currency, INITIAL_ACCOUNTS } from './types';
-import { fetchExchangeRate, analyzePortfolio } from './services/geminiService';
+import { Account, AccountType, Currency, INITIAL_ACCOUNTS, Transaction } from './types';
+import { analyzePortfolio, analyzeSpending, fetchExchangeRates } from './services/geminiService';
 import { AssetChart } from './components/AssetChart';
-import { ExcelGenerator } from './components/ExcelGenerator';
+import { ImportWizard } from './components/ImportWizard';
+import { ExpenseTracker } from './components/ExpenseTracker';
 
-// Initial assumed rate
-const DEFAULT_RATE = 1.08; 
-// Updated key to v8 to reset data for the user
-const STORAGE_KEY = 'wealthdash_data_user_v8';
+const STORAGE_KEY = 'wealthdash_data_user_v14'; 
+
+// Default rates relative to HKD
+const DEFAULT_RATES: Record<string, number> = {
+  [Currency.HKD]: 1,
+  [Currency.CNY]: 1.08,
+  [Currency.USD]: 7.82,
+  [Currency.JPY]: 0.052,
+  [Currency.EUR]: 8.5,
+  [Currency.GBP]: 9.9,
+  [Currency.AUD]: 5.2,
+  [Currency.CAD]: 5.8,
+  [Currency.SGD]: 5.8,
+};
 
 const App: React.FC = () => {
   // --- STATE ---
+  const [activeTab, setActiveTab] = useState<'ASSETS' | 'EXPENSES'>('ASSETS');
+  
+  // New State: Base Currency for Display (Default HKD)
+  const [baseCurrency, setBaseCurrency] = useState<Currency>(Currency.HKD);
+
   const [accounts, setAccounts] = useState<Account[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -42,41 +65,44 @@ const App: React.FC = () => {
                  balance: typeof a.balance === 'number' ? a.balance : (parseFloat(a.balance) || 0)
              }));
         }
-        return parsed.accounts || INITIAL_ACCOUNTS;
+        return INITIAL_ACCOUNTS;
       }
-    } catch (e) {
-      console.warn("Failed to load data, resetting to defaults", e);
-    }
+    } catch (e) { console.warn(e); }
     return INITIAL_ACCOUNTS;
   });
 
-  const [rateCNYtoHKD, setRateCNYtoHKD] = useState<number>(() => {
+  const [transactions, setTransactions] = useState<Transaction[]>(() => {
+      try {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (saved) {
+              const parsed = JSON.parse(saved);
+              return Array.isArray(parsed.transactions) ? parsed.transactions : [];
+          }
+      } catch (e) {}
+      return [];
+  });
+
+  const [exchangeRates, setExchangeRates] = useState<Record<string, number>>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        const r = parseFloat(parsed.rate);
-        return isNaN(r) ? DEFAULT_RATE : r;
+        return parsed.exchangeRates || DEFAULT_RATES;
       }
     } catch (e) {}
-    return DEFAULT_RATE;
+    return DEFAULT_RATES;
   });
 
-  const [baseCurrency, setBaseCurrency] = useState<Currency>(Currency.HKD);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [aiAnalysis, setAiAnalysis] = useState<string>("");
-  const [isLoadingRate, setIsLoadingRate] = useState(false);
+  const [assetAnalysis, setAssetAnalysis] = useState<string>("");
+  const [expenseAnalysis, setExpenseAnalysis] = useState<string>("");
   
-  // New Interactive States
-  const [activeFocus, setActiveFocus] = useState<'NET' | 'HKD' | 'CNY' | null>(null);
+  // Interactive States
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
-  const [highlightedAssetId, setHighlightedAssetId] = useState<string | null>(null); // New state for linking chart & list
-  const [isExcelGeneratorOpen, setIsExcelGeneratorOpen] = useState(false);
+  const [highlightedAssetId, setHighlightedAssetId] = useState<string | null>(null); 
+  const [isImportOpen, setIsImportOpen] = useState(false);
 
-  // File input ref for import
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // New Account State for "Quick Add"
+  // Quick Add State
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountBalance, setNewAccountBalance] = useState("");
   const [newAccountCurrency, setNewAccountCurrency] = useState<Currency>(Currency.HKD);
@@ -86,80 +112,119 @@ const App: React.FC = () => {
   useEffect(() => {
     const dataToSave = {
       accounts,
-      rate: rateCNYtoHKD,
+      transactions,
+      exchangeRates,
       lastUpdated: new Date().toISOString()
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
-  }, [accounts, rateCNYtoHKD]);
+  }, [accounts, transactions, exchangeRates]);
+
+  useEffect(() => {
+    if (Object.keys(exchangeRates).length <= 2) {
+       refreshRates();
+    }
+  }, []);
+
+  const refreshRates = async () => {
+     const rates = await fetchExchangeRates();
+     if (rates) {
+         setExchangeRates(prev => ({ ...prev, ...rates }));
+     }
+  };
+
+  const toggleBaseCurrency = () => {
+      setBaseCurrency(prev => {
+        if (prev === Currency.HKD) return Currency.CNY;
+        if (prev === Currency.CNY) return Currency.USD;
+        return Currency.HKD;
+      });
+  };
 
   // --- CALCULATIONS ---
   const totals = useMemo(() => {
-    let hkdTotal = 0;
-    let cnyTotal = 0;
-    const safeRate = isNaN(rateCNYtoHKD) || rateCNYtoHKD <= 0 ? 1 : rateCNYtoHKD;
-
+    // 1. Calculate raw totals in HKD first
+    let totalHKD = 0;
+    let hkdCashBucket = 0; 
+    let foreignCashBucket = 0; 
+    let investmentBucket = 0; 
+    let liabilityBucket = 0; 
+    
     accounts.forEach(acc => {
       const bal = typeof acc.balance === 'number' ? acc.balance : 0;
-      if (acc.currency === Currency.HKD) hkdTotal += bal;
-      if (acc.currency === Currency.CNY) cnyTotal += bal;
+      const rateToHKD = exchangeRates[acc.currency] || (acc.currency === Currency.HKD ? 1 : 0);
+      const effectiveRate = rateToHKD === 0 ? 1 : rateToHKD;
+      const balInHKD = bal * effectiveRate;
+      
+      const isNegative = bal < 0;
+
+      if (acc.type === AccountType.INVESTMENT) {
+        if (bal > 0) investmentBucket += balInHKD;
+      } else if (isNegative) {
+        liabilityBucket += Math.abs(balInHKD);
+      } else {
+        // Cash buckets separation logic
+        if (acc.currency === Currency.HKD) {
+            hkdCashBucket += bal;
+        } else {
+            foreignCashBucket += balInHKD; 
+        }
+      }
+      totalHKD += balInHKD;
     });
 
-    const totalInHKD = hkdTotal + (cnyTotal * safeRate);
-    const totalInCNY = cnyTotal + (hkdTotal / safeRate);
-
-    return { hkdTotal, cnyTotal, totalInHKD, totalInCNY };
-  }, [accounts, rateCNYtoHKD]);
-
-  // Focus Data Logic
-  const focusData = useMemo(() => {
-    if (!activeFocus) return null;
-    let data = { title: '', amount: 0, currencySymbol: '', assets: [] as Account[] };
-    const safeRate = isNaN(rateCNYtoHKD) || rateCNYtoHKD <= 0 ? 1 : rateCNYtoHKD;
-    
-    if (activeFocus === 'NET') {
-      data.title = 'Net Worth Breakdown';
-      data.amount = baseCurrency === Currency.HKD ? totals.totalInHKD : totals.totalInCNY;
-      data.currencySymbol = baseCurrency === Currency.HKD ? '$' : '¥';
-      data.assets = [...accounts].sort((a, b) => {
-        const valA = a.currency === Currency.CNY ? a.balance * safeRate : a.balance;
-        const valB = b.currency === Currency.CNY ? b.balance * safeRate : b.balance;
-        return valB - valA;
-      });
-    } else if (activeFocus === 'HKD') {
-      data.title = 'HKD Assets';
-      data.amount = totals.hkdTotal;
-      data.currencySymbol = '$';
-      data.assets = accounts.filter(a => a.currency === Currency.HKD).sort((a, b) => b.balance - a.balance);
-    } else if (activeFocus === 'CNY') {
-      data.title = 'CNY Assets';
-      data.amount = totals.cnyTotal;
-      data.currencySymbol = '¥';
-      data.assets = accounts.filter(a => a.currency === Currency.CNY).sort((a, b) => b.balance - a.balance);
+    // 2. Determine conversion rate for display
+    // If Base is HKD, factor is 1. If Base is CNY, factor is 1 / Rate(CNY->HKD)
+    let displayFactor = 1;
+    if (baseCurrency !== Currency.HKD) {
+        const baseRateToHKD = exchangeRates[baseCurrency] || 1;
+        displayFactor = 1 / baseRateToHKD;
     }
-    return data;
-  }, [activeFocus, accounts, totals, baseCurrency, rateCNYtoHKD]);
+
+    const netWorth = (hkdCashBucket + foreignCashBucket + investmentBucket - liabilityBucket) * displayFactor;
+
+    let symbol = '$';
+    if (baseCurrency === Currency.HKD) symbol = 'HK$';
+    else if (baseCurrency === Currency.CNY) symbol = 'CN¥';
+    else if (baseCurrency === Currency.USD) symbol = 'US$';
+
+    return { 
+        netWorth,
+        hkdCash: hkdCashBucket * displayFactor, 
+        foreignCash: foreignCashBucket * displayFactor,
+        investments: investmentBucket * displayFactor, 
+        liabilities: liabilityBucket * displayFactor,
+        symbol
+    };
+  }, [accounts, exchangeRates, baseCurrency]);
 
 
   // --- HANDLERS ---
-  const handleUpdateRate = async () => {
-    setIsLoadingRate(true);
-    const rate = await fetchExchangeRate();
-    if (rate) {
-      setRateCNYtoHKD(rate);
-    }
-    setIsLoadingRate(false);
-  };
+  const triggerAutoAnalysis = async (currentAccounts: Account[], currentTransactions: Transaction[]) => {
+      if (currentAccounts.length === 0 && currentTransactions.length === 0) return;
+      
+      setIsAnalyzing(true);
+      
+      try {
+          // Calculate approximate Net Worth in HKD for analysis context
+          let totalHKD = 0;
+          currentAccounts.forEach(acc => {
+              const rate = exchangeRates[acc.currency] || 1;
+              totalHKD += (acc.balance * rate);
+          });
 
-  const toggleCurrency = (e?: React.MouseEvent) => {
-    e?.stopPropagation(); 
-    setBaseCurrency(prev => prev === Currency.HKD ? Currency.CNY : Currency.HKD);
-  };
+          // Run in parallel
+          const [assetRes, expenseRes] = await Promise.all([
+              currentAccounts.length > 0 ? analyzePortfolio(currentAccounts, totalHKD) : Promise.resolve(""),
+              currentTransactions.length > 0 ? analyzeSpending(currentTransactions) : Promise.resolve("")
+          ]);
 
-  const handleRunAnalysis = async () => {
-    setIsAnalyzing(true);
-    const result = await analyzePortfolio(accounts, totals.totalInHKD);
-    setAiAnalysis(result);
-    setIsAnalyzing(false);
+          if (assetRes) setAssetAnalysis(assetRes);
+          if (expenseRes) setExpenseAnalysis(expenseRes);
+      } catch (e) {
+          console.error("Auto analysis failed", e);
+      } finally {
+          setIsAnalyzing(false);
+      }
   };
 
   const handleDeleteAccount = (id: string) => {
@@ -186,66 +251,93 @@ const App: React.FC = () => {
     setNewAccountBalance("");
   };
 
-  const handleImportToApp = (newAccounts: Account[], extractedRate?: number) => {
-    setAccounts(newAccounts);
-    if (extractedRate) {
-        setRateCNYtoHKD(extractedRate);
-    }
-    setIsExcelGeneratorOpen(false);
-  };
-
   const handleResetData = () => {
     if(window.confirm("This will clear all your data. Continue?")) {
-        // Reset local storage
         localStorage.removeItem(STORAGE_KEY);
-        // Reset all states to initial defaults
         setAccounts([]);
-        setRateCNYtoHKD(DEFAULT_RATE);
-        setAiAnalysis("");
-        setActiveFocus(null);
+        setTransactions([]);
+        setAssetAnalysis("");
+        setExpenseAnalysis("");
         setSelectedAccount(null);
         setHighlightedAssetId(null);
-        setNewAccountName("");
-        setNewAccountBalance("");
     }
   };
 
-  // --- SUB-COMPONENTS ---
-  const FocusModal = () => {
-     if (!focusData) return null;
-     const safeRate = isNaN(rateCNYtoHKD) || rateCNYtoHKD <= 0 ? 1 : rateCNYtoHKD;
-     return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-300" onClick={() => setActiveFocus(null)}></div>
-           <div className="bg-white rounded-3xl w-full max-w-2xl max-h-[85vh] shadow-2xl overflow-hidden relative z-10 animate-in fade-in zoom-in-95 slide-in-from-bottom-8 duration-300 flex flex-col">
-              <div className={`p-8 pb-12 text-white relative ${activeFocus === 'NET' ? 'bg-gradient-to-br from-blue-900 to-slate-900' : activeFocus === 'HKD' ? 'bg-gradient-to-br from-blue-600 to-blue-800' : 'bg-gradient-to-br from-amber-500 to-orange-600'}`}>
-                  <button onClick={() => setActiveFocus(null)} className="absolute top-4 right-4 text-white/70 hover:text-white bg-white/10 p-2 rounded-full backdrop-blur-sm transition-colors"><X size={20} /></button>
-                  <div className="flex items-center gap-2 mb-2 text-white/80 font-semibold text-sm tracking-wider uppercase"><PieChartIcon size={16} />{focusData.title}</div>
-                  <div className="text-5xl font-bold tracking-tight">{focusData.currencySymbol} {focusData.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-              </div>
-              <div className="flex-1 overflow-y-auto p-6 -mt-6 bg-white rounded-t-3xl relative">
-                  <div className="space-y-6">
-                      {focusData.assets.map(asset => {
-                          const val = activeFocus === 'NET' && asset.currency === Currency.CNY && baseCurrency === Currency.HKD 
-                            ? asset.balance * safeRate 
-                            : (activeFocus === 'NET' && asset.currency === Currency.HKD && baseCurrency === Currency.CNY ? asset.balance / safeRate : asset.balance);
-                          const percentage = focusData.amount > 0 ? (val / focusData.amount) * 100 : 0;
-                          return (
-                              <div key={asset.id} className="group cursor-pointer" onClick={() => { setActiveFocus(null); setSelectedAccount(asset); }}>
-                                  <div className="flex justify-between items-end mb-1">
-                                      <div className="font-bold text-slate-800 flex items-center gap-2 group-hover:text-blue-600 transition-colors">{asset.name}</div>
-                                      <div className="text-sm font-mono font-medium text-slate-600 group-hover:text-blue-600 transition-colors">{focusData.currencySymbol} {val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                                  </div>
-                                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden"><div className={`h-full rounded-full ${asset.currency === Currency.HKD ? 'bg-blue-500' : 'bg-amber-500'}`} style={{width: `${percentage}%`}}></div></div>
-                              </div>
-                          );
-                      })}
-                  </div>
-              </div>
-           </div>
-        </div>
-     );
+  const handleClearTransactions = () => {
+      if(window.confirm("Clear all transaction history?")) {
+          setTransactions([]);
+          setExpenseAnalysis("");
+      }
+  }
+
+  // --- IMPORT HANDLER ---
+  const handleImportSmart = async (data: { accounts: Partial<Account>[], transactions: Transaction[] }) => {
+      let nextAccounts = [...accounts];
+      let nextTransactions = [...transactions];
+
+      if (data.accounts && data.accounts.length > 0) {
+           data.accounts.forEach(newAccount => {
+              if (!newAccount.name) return;
+              const existingIndex = nextAccounts.findIndex(a => 
+                  a.name.toLowerCase() === newAccount.name?.toLowerCase()
+              );
+              if (existingIndex >= 0) {
+                  nextAccounts[existingIndex] = { ...nextAccounts[existingIndex], balance: newAccount.balance || 0 };
+              } else {
+                  nextAccounts.push({
+                      id: `ai-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                      name: newAccount.name || 'New Account',
+                      balance: newAccount.balance || 0,
+                      currency: newAccount.currency || Currency.HKD,
+                      type: newAccount.type || AccountType.BANK
+                  } as Account);
+              }
+          });
+      }
+
+      if (data.transactions && data.transactions.length > 0) {
+          nextTransactions = [...data.transactions, ...nextTransactions];
+      }
+      
+      // Update State
+      setAccounts(nextAccounts);
+      setTransactions(nextTransactions);
+
+      // Auto Switch Tab
+      if (data.transactions.length > 0) {
+          setActiveTab('EXPENSES');
+      } else if (data.accounts.length > 0) {
+          setActiveTab('ASSETS');
+      }
+
+      // TRIGGER AUTO ANALYSIS
+      await triggerAutoAnalysis(nextAccounts, nextTransactions);
   };
+
+  // --- COMPONENT: STAT CARD ---
+  const StatCard = ({ title, value, currency, icon: Icon, colorClass, onClick, subtext, activeAction }: any) => (
+      <div 
+         onClick={onClick}
+         className={`relative overflow-hidden rounded-3xl p-5 cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-lg group bg-white border border-slate-100 shadow-sm ${activeAction ? 'ring-2 ring-blue-500 ring-offset-2' : ''}`}
+      >
+         <div className={`absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity ${colorClass}`}>
+             <Icon size={48} />
+         </div>
+         <div className="relative z-10">
+             <div className="flex items-center gap-2 mb-2">
+                 <div className={`p-2 rounded-xl text-white shadow-md ${colorClass.replace('text-', 'bg-')}`}>
+                     <Icon size={18} />
+                 </div>
+                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>
+             </div>
+             <div className="text-2xl font-extrabold text-slate-800 tracking-tight">
+                 <span className="text-sm text-slate-400 mr-1 font-medium">{currency}</span>
+                 {value}
+             </div>
+             {subtext && <div className="text-[10px] text-slate-400 font-medium mt-1">{subtext}</div>}
+         </div>
+      </div>
+  );
 
   const AccountEditModal = () => {
     if (!selectedAccount) return null;
@@ -264,7 +356,7 @@ const App: React.FC = () => {
                   <div><label className="block text-xs font-semibold text-slate-500 mb-1">Name</label><input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full border-slate-300 rounded-lg focus:ring-blue-500 px-3 py-2 text-sm"/></div>
                   <div><label className="block text-xs font-semibold text-slate-500 mb-1">Balance</label><input type="number" value={balance} onChange={e => setBalance(e.target.value)} className="w-full border-slate-300 rounded-lg focus:ring-blue-500 px-3 py-2 text-sm font-mono"/></div>
                   <div className="grid grid-cols-2 gap-4">
-                      <div><label className="block text-xs font-semibold text-slate-500 mb-1">Currency</label><select value={currency} onChange={e => setCurrency(e.target.value as Currency)} className="w-full border-slate-300 rounded-lg px-2 py-2 text-sm"><option value={Currency.HKD}>HKD</option><option value={Currency.CNY}>CNY</option></select></div>
+                      <div><label className="block text-xs font-semibold text-slate-500 mb-1">Currency</label><select value={currency} onChange={e => setCurrency(e.target.value as Currency)} className="w-full border-slate-300 rounded-lg px-2 py-2 text-sm">{Object.values(Currency).map(c => <option key={c} value={c}>{c}</option>)}</select></div>
                       <div><label className="block text-xs font-semibold text-slate-500 mb-1">Type</label><select value={type} onChange={e => setType(e.target.value as AccountType)} className="w-full border-slate-300 rounded-lg px-2 py-2 text-sm"><option value={AccountType.BANK}>Bank</option><option value={AccountType.INVESTMENT}>Invest</option><option value={AccountType.WALLET}>Wallet</option><option value={AccountType.PERSONAL}>Other</option></select></div>
                   </div>
               </div>
@@ -277,177 +369,190 @@ const App: React.FC = () => {
     );
   };
 
+  const showHKD = totals.hkdCash > 0;
+  const showForeign = totals.foreignCash > 0;
+  const showInvest = totals.investments > 0;
+  const showCredit = totals.liabilities > 0;
+  const visibleCardsCount = 1 + (showHKD?1:0) + (showForeign?1:0) + (showInvest?1:0) + (showCredit?1:0);
+  const gridColsClass = `grid grid-cols-2 ${visibleCardsCount >= 5 ? 'md:grid-cols-5' : visibleCardsCount === 4 ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-4 mb-8`;
+
+  // Define Tabs component
+  const renderTabs = () => (
+      <div className="flex items-center gap-1 bg-white p-1 rounded-2xl border border-slate-200 shadow-sm w-fit mb-2">
+          <button 
+            onClick={() => setActiveTab('ASSETS')}
+            className={`flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'ASSETS' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'}`}
+          >
+            <LayoutDashboard size={16}/> Assets
+          </button>
+          <button 
+            onClick={() => setActiveTab('EXPENSES')}
+            className={`flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${activeTab === 'EXPENSES' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'}`}
+          >
+            <Receipt size={16}/> Expenses
+          </button>
+      </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans pb-10 selection:bg-blue-100">
-      <input type="file" ref={fileInputRef} onChange={() => {}} className="hidden" accept=".json"/>
-      {activeFocus && <FocusModal />}
       {selectedAccount && <AccountEditModal />}
-      {isExcelGeneratorOpen && <ExcelGenerator rateCNYtoHKD={rateCNYtoHKD} onClose={() => setIsExcelGeneratorOpen(false)} onUpdateApp={handleImportToApp}/>}
+      {isImportOpen && (
+        <ImportWizard 
+          onClose={() => setIsImportOpen(false)} 
+          onImportSmart={handleImportSmart}
+        />
+      )}
 
       {/* HEADER */}
       <header className="bg-white/80 backdrop-blur-md border-b border-slate-200/60 sticky top-0 z-20">
-        <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center text-white shadow-lg"><Wallet size={20} /></div>
-            <div><h1 className="text-xl font-extrabold tracking-tight text-slate-900">WealthDash</h1><p className="text-xs text-slate-500 font-medium hidden md:block">Personal Asset Tracker</p></div>
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 md:gap-0">
+          <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-start">
+            <div className="flex items-center gap-3">
+               <div className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center text-white shadow-lg"><Wallet size={20} /></div>
+               <div><h1 className="text-xl font-extrabold tracking-tight text-slate-900">WealthDash</h1><p className="text-xs text-slate-500 font-medium hidden md:block">Personal Asset Tracker</p></div>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-             <div className="hidden md:flex items-center gap-2 bg-slate-100/80 px-4 py-1.5 rounded-full text-xs font-bold text-slate-600 border border-slate-200"><ArrowRightLeft size={14} /><span className="font-mono">1 CNY = {rateCNYtoHKD.toFixed(3)} HKD</span></div>
-             <button onClick={toggleCurrency} className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-bold shadow-sm">{baseCurrency}</button>
-             <button onClick={() => setIsExcelGeneratorOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-200"><FileSpreadsheet size={16} /> <span className="hidden md:inline">Import</span></button>
+          
+          <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+             <button 
+                onClick={toggleBaseCurrency} 
+                className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 text-slate-700 text-xs font-bold hover:bg-white hover:shadow-sm transition-all"
+                title="Switch Base Currency"
+             >
+                <RefreshCcw size={12} />
+                <span>Display: {baseCurrency}</span>
+             </button>
+
+             <div className="hidden md:flex items-center gap-2 bg-slate-100/80 px-4 py-1.5 rounded-full text-xs font-bold text-slate-600 border border-slate-200" title="Exchange Rates"><Globe size={14} /><span className="font-mono">USD:{exchangeRates['USD']} • JPY:{exchangeRates['JPY']}</span></div>
+             <button onClick={() => setIsImportOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-bold hover:bg-slate-800 shadow-lg shadow-slate-200"><Upload size={16} /> <span className="hidden md:inline">Import</span></button>
           </div>
         </div>
       </header>
 
       {/* MAIN CONTENT */}
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-8">
-        
-        {/* TOP ROW: AI & TOTALS */}
-        {/* Total Wealth Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div onClick={() => setActiveFocus('NET')} className="group cursor-pointer bg-slate-900 rounded-3xl p-8 text-white shadow-2xl shadow-slate-900/20 relative overflow-hidden flex flex-col justify-center min-h-[160px]">
-              <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl -mr-16 -mt-16"></div>
-              <div className="relative z-10">
-                <div className="flex items-center gap-2 mb-4 text-slate-400"><Wallet size={16} /><span className="text-xs font-bold uppercase tracking-wider">Net Worth</span></div>
-                <div className="text-4xl font-extrabold mb-2 tracking-tight">{baseCurrency === Currency.HKD ? `$ ${totals.totalInHKD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `¥ ${totals.totalInCNY.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}</div>
-                <div className="text-slate-500 text-xs font-medium">Click for breakdown</div>
-              </div>
-          </div>
-          <div className="md:col-span-2 flex flex-col gap-6">
-             {/* AI Section */}
-             <div className="flex-1 bg-gradient-to-r from-indigo-600 to-violet-600 rounded-3xl p-6 text-white shadow-lg shadow-indigo-200 relative overflow-hidden">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 h-full relative z-10">
-                    <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                            <BrainCircuit size={20} className="text-indigo-200" />
-                            <h3 className="font-bold text-lg">AI Wealth Insights</h3>
+            {/* STATS ROW */}
+            <div className={gridColsClass}>
+                {/* 1. Net Worth (Clickable) */}
+                <div 
+                   onClick={toggleBaseCurrency}
+                   className={`col-span-2 ${visibleCardsCount <= 3 ? 'md:col-span-2' : 'md:col-span-1'} bg-gradient-to-br from-indigo-600 to-violet-600 rounded-3xl p-6 text-white shadow-xl shadow-indigo-200 relative overflow-hidden cursor-pointer group hover:scale-[1.02] active:scale-[0.98] transition-transform`}
+                >
+                    <div className="absolute top-0 right-0 p-4 opacity-20"><Landmark size={80} /></div>
+                    <div className="relative z-10 h-full flex flex-col justify-between">
+                        <div>
+                           <div className="flex items-center gap-2 mb-2 opacity-90"><Sparkles size={16}/><span className="text-xs font-bold uppercase tracking-wider">Net Worth ({baseCurrency})</span></div>
+                           <div className="text-3xl font-extrabold tracking-tight">
+                               {totals.symbol}{totals.netWorth.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                           </div>
                         </div>
-                        <p className="text-indigo-100 text-sm leading-relaxed max-w-2xl line-clamp-2 md:line-clamp-none">
-                             {aiAnalysis || "Unlock personalized insights about your portfolio diversification and currency risk."}
-                        </p>
+                        <div className="mt-4 pt-4 border-t border-white/20 flex justify-between items-center">
+                             <span className="text-xs font-medium opacity-80 flex items-center gap-1"><RefreshCcw size={10} /> Tap to switch</span>
+                             <ArrowRight size={16} className="opacity-50 group-hover:translate-x-1 transition-transform"/>
+                        </div>
                     </div>
-                    <button onClick={handleRunAnalysis} disabled={isAnalyzing || accounts.length === 0} className="bg-white text-indigo-600 font-bold px-6 py-3 rounded-xl text-sm hover:bg-indigo-50 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap flex items-center gap-2 justify-center">
-                        {isAnalyzing ? <><Sparkles className="animate-spin" size={16}/> Analyzing...</> : "Analyze Portfolio"}
-                    </button>
                 </div>
-            </div>
-          </div>
-        </div>
 
-        {/* MIDDLE ROW: CHART & QUICK ADD (Side-by-Side) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-12">
+                {/* Other Stats */}
+                {showHKD && <StatCard title={`HKD Cash`} value={totals.hkdCash.toLocaleString(undefined, { maximumFractionDigits: 0 })} currency={totals.symbol} icon={Banknote} colorClass="text-cyan-500" subtext={`${baseCurrency} Equivalent`} />}
+                {showForeign && <StatCard title="Foreign Cash" value={totals.foreignCash.toLocaleString(undefined, { maximumFractionDigits: 0 })} currency={totals.symbol} icon={Coins} colorClass="text-orange-500" subtext={`${baseCurrency} Equivalent`} />}
+                {showInvest && <StatCard title="Investments" value={totals.investments.toLocaleString(undefined, { maximumFractionDigits: 0 })} currency={totals.symbol} icon={TrendingUp} colorClass="text-emerald-500" subtext={`${baseCurrency} Equivalent`} />}
+                {showCredit && <StatCard title="Credit Cards" value={totals.liabilities.toLocaleString(undefined, { maximumFractionDigits: 0 })} currency={totals.symbol} icon={CreditCard} colorClass="text-rose-500" subtext="Outstanding" />}
+            </div>
             
-            {/* LEFT: CHART (8/12) */}
-            <div className="lg:col-span-8">
-                {accounts.length === 0 ? (
-                   <div className="h-[420px] bg-white/80 backdrop-blur-xl rounded-3xl border border-white/20 shadow-xl flex flex-col items-center justify-center p-8 text-center relative overflow-hidden group">
-                        <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-blue-50/50 to-emerald-50/50 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
-                        <div className="relative z-10 max-w-md w-full flex flex-col items-center">
-                            <div className="w-20 h-20 bg-white rounded-2xl shadow-lg border border-slate-100 flex items-center justify-center mb-6 transform group-hover:scale-110 transition-transform duration-300">
-                                <FileSpreadsheet className="text-emerald-500" size={40} />
-                            </div>
-                            <h3 className="text-2xl font-bold text-slate-800 mb-3">Visualize Your Wealth</h3>
-                            <p className="text-slate-500 mb-8 leading-relaxed max-w-xs mx-auto">
-                                Upload your asset spreadsheet to instantly generate charts, or use the Quick Add form.
-                            </p>
+            {/* MAIN LAYOUT GRID (2 Columns: Left=Data (2/3), Right=Context (1/3)) */}
+            {activeTab === 'ASSETS' ? (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    {/* LEFT COLUMN (2/3) */}
+                    <div className="lg:col-span-2 space-y-6">
+                        
+                        {/* TABS (Inside left column) */}
+                        {renderTabs()}
 
-                            <button
-                                onClick={() => setIsExcelGeneratorOpen(true)}
-                                className="w-full sm:w-auto px-8 py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-lg shadow-lg shadow-emerald-200/50 transition-all hover:-translate-y-1 flex items-center justify-center gap-3 group/btn"
-                            >
-                                <Upload size={20} />
-                                <span>Import Excel Data</span>
-                                <ArrowRight size={18} className="opacity-70 group-hover/btn:translate-x-1 transition-transform"/>
-                            </button>
-
-                            <div className="mt-8 flex items-center justify-center gap-4 text-xs text-slate-400 font-medium uppercase tracking-widest w-full">
-                                <span className="h-px w-12 bg-slate-200"></span>
-                                <span>Or add manually</span>
-                                <span className="h-px w-12 bg-slate-200"></span>
-                            </div>
-                        </div>
-                   </div>
-                ) : (
-                   <div className="h-full">
-                      <AssetChart 
-                        accounts={accounts} 
-                        rateCNYtoHKD={rateCNYtoHKD} 
-                        highlightedId={highlightedAssetId}
-                        onAccountClick={(id) => { const acc = accounts.find(a => a.id === id); if (acc) setSelectedAccount(acc); }} 
-                      />
-                   </div>
-                )}
-            </div>
-
-            {/* RIGHT: QUICK ADD (4/12) - Magnified & Aligned */}
-            <div className="lg:col-span-4">
-                <div className="bg-white border border-slate-200 rounded-3xl shadow-sm p-8 h-full flex flex-col justify-center relative overflow-hidden">
-                    <h3 className="text-xl font-extrabold text-slate-800 mb-6 flex items-center gap-3">
-                        <div className="bg-slate-900 text-white p-2 rounded-xl"><Plus size={24}/></div>
-                        Quick Add Asset
-                    </h3>
-                    <div className="space-y-5">
-                        <div className="space-y-1">
-                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">Asset Name</label>
-                            <input type="text" value={newAccountName} onChange={e => setNewAccountName(e.target.value)} placeholder="e.g. HSBC Savings" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-base font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-all"/>
-                        </div>
-                        <div className="flex gap-3">
-                            <div className="flex-1 space-y-1">
-                                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">Balance</label>
-                                <input type="number" value={newAccountBalance} onChange={e => setNewAccountBalance(e.target.value)} placeholder="0.00" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-base font-mono font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-all"/>
-                            </div>
-                            <div className="w-1/3 space-y-1">
-                                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">Curr</label>
-                                <select value={newAccountCurrency} onChange={e => setNewAccountCurrency(e.target.value as Currency)} className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-base font-bold focus:outline-none focus:border-blue-500 cursor-pointer h-[58px]"><option value={Currency.HKD}>HKD</option><option value={Currency.CNY}>CNY</option></select>
-                            </div>
-                        </div>
-                        <button onClick={handleAddAccount} className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl hover:bg-blue-700 transition-all shadow-xl shadow-blue-200 text-base flex items-center justify-center gap-2 active:scale-[0.98]">
-                            Add to Portfolio <ArrowRight size={20} />
-                        </button>
+                        {/* CHART or EMPTY STATE */}
+                        {accounts.length === 0 ? (
+                          <div className="h-[420px] bg-white rounded-3xl border border-slate-200 shadow-sm flex flex-col items-center justify-center p-8 text-center">
+                                <div className="w-20 h-20 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mb-6"><FileSpreadsheet size={40} /></div>
+                                <h3 className="text-2xl font-bold text-slate-800 mb-2">Empty Portfolio</h3>
+                                <p className="text-slate-500 mb-6">Import data to see your wealth visualization.</p>
+                                <button onClick={() => setIsImportOpen(true)} className="px-8 py-3 bg-slate-900 text-white rounded-xl font-bold flex items-center gap-2"><Upload size={18} /> Import Data</button>
+                          </div>
+                        ) : (
+                          <AssetChart 
+                                accounts={accounts} 
+                                rateCNYtoHKD={exchangeRates['CNY'] || 1.08}
+                                rates={exchangeRates} 
+                                baseCurrency={baseCurrency}
+                                highlightedId={highlightedAssetId}
+                                onAccountClick={(id) => { const acc = accounts.find(a => a.id === id); if (acc) setSelectedAccount(acc); }}
+                                onHover={(id) => setHighlightedAssetId(id)}
+                          />
+                        )}
                     </div>
-                </div>
-            </div>
-        </div>
 
-        {/* BOTTOM ROW: ASSET LIST (Centered Grid) */}
-        <div className="max-w-6xl mx-auto">
-             <div className="flex items-center justify-between mb-6 px-2">
-                 <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><CreditCard size={24} className="text-slate-400"/> Your Assets</h3>
-                 <span className="text-sm font-bold bg-white border border-slate-200 text-slate-600 px-3 py-1 rounded-full shadow-sm">{accounts.length} Accounts</span>
-             </div>
-             
-             {accounts.length === 0 ? (
-                 <div className="text-center py-12 bg-white rounded-3xl border border-slate-100 shadow-sm">
-                     <p className="text-slate-400">No assets tracked yet.</p>
-                 </div>
-             ) : (
-                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                     {accounts.map(acc => (
-                         <div 
-                           key={acc.id} 
-                           onClick={() => setSelectedAccount(acc)} 
-                           onMouseEnter={() => setHighlightedAssetId(acc.id)}
-                           onMouseLeave={() => setHighlightedAssetId(null)}
-                           className={`bg-white p-5 rounded-2xl border shadow-sm cursor-pointer transition-all group relative overflow-hidden ${highlightedAssetId === acc.id ? 'border-blue-400 shadow-md scale-[1.02] ring-2 ring-blue-100' : 'border-slate-200 hover:shadow-md hover:border-blue-300'}`}
-                         >
-                             <div className={`absolute top-0 left-0 w-1 h-full ${acc.currency === Currency.HKD ? 'bg-blue-500' : 'bg-amber-500'}`}></div>
-                             <div className="flex justify-between items-start mb-3 pl-2">
-                                 <div className="font-bold text-slate-700 text-base line-clamp-1 group-hover:text-blue-700 transition-colors">{acc.name}</div>
-                                 <div className={`text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wide ${acc.currency === Currency.HKD ? 'bg-blue-50 text-blue-600' : 'bg-amber-50 text-amber-600'}`}>{acc.currency}</div>
-                             </div>
-                             <div className="pl-2">
-                                 <div className="text-xs text-slate-400 mb-0.5">{acc.type}</div>
-                                 <div className="font-mono font-bold text-xl text-slate-800">{acc.balance.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
-                             </div>
-                         </div>
-                     ))}
-                 </div>
-             )}
-        </div>
+                    {/* RIGHT COLUMN (1/3) - Sticky Sidebar */}
+                    <div className="lg:col-span-1">
+                        <div className="sticky top-24 space-y-6">
+                            
+                            {/* AI CARD (Moved to Right for Balance) */}
+                            {(assetAnalysis || isAnalyzing) && (
+                                <div className="bg-gradient-to-br from-slate-800 to-black rounded-3xl p-6 text-white shadow-xl relative overflow-hidden group">
+                                    <div className="absolute top-0 right-0 w-80 h-80 bg-blue-500/20 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none group-hover:bg-blue-500/30 transition-colors duration-500"></div>
+                                    <div className="relative z-10">
+                                        <div className="flex items-center gap-2 mb-3 text-blue-300">
+                                            <Sparkles size={18} className={isAnalyzing ? "animate-spin" : ""} />
+                                            <h3 className="text-xs font-bold uppercase tracking-widest">AI Financial Coach</h3>
+                                        </div>
+                                        <p className="text-sm leading-relaxed text-slate-200">
+                                            {isAnalyzing ? "Analyzing your asset distribution and currency exposure..." : assetAnalysis}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
 
+                            {/* QUICK ADD */}
+                            <div className="bg-white border border-slate-200 rounded-3xl shadow-sm p-6 md:p-8">
+                                <h3 className="text-xl font-extrabold text-slate-800 mb-6 flex items-center gap-3">
+                                    <div className="bg-slate-900 text-white p-2 rounded-xl"><Plus size={20}/></div>
+                                    Quick Add
+                                </h3>
+                                <div className="space-y-4">
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">Asset Name</label>
+                                        <input type="text" value={newAccountName} onChange={e => setNewAccountName(e.target.value)} placeholder="e.g. Cash" className="w-full p-3 bg-slate-50 border-2 border-slate-100 rounded-xl text-sm font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-all"/>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div className="space-y-1">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">Amount</label>
+                                            <input type="number" value={newAccountBalance} onChange={e => setNewAccountBalance(e.target.value)} placeholder="0.00" className="w-full p-3 bg-slate-50 border-2 border-slate-100 rounded-xl text-sm font-mono font-medium focus:outline-none focus:border-blue-500 focus:bg-white transition-all"/>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider ml-1">Currency</label>
+                                            <select value={newAccountCurrency} onChange={e => setNewAccountCurrency(e.target.value as Currency)} className="w-full p-3 bg-slate-50 border-2 border-slate-100 rounded-xl text-sm font-bold focus:outline-none focus:border-blue-500 cursor-pointer">{Object.values(Currency).map(c => <option key={c} value={c}>{c}</option>)}</select>
+                                        </div>
+                                    </div>
+                                    <button onClick={handleAddAccount} className="w-full bg-blue-600 text-white font-bold py-3.5 rounded-xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 text-sm flex items-center justify-center gap-2 active:scale-[0.98] mt-2">
+                                        Add Asset
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+              </div>
+            ) : (
+               <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                   <ExpenseTracker 
+                      rateCNYtoHKD={exchangeRates['CNY'] || 1.08} 
+                      transactions={transactions} 
+                      analysisResult={expenseAnalysis} 
+                      onClearData={handleClearTransactions}
+                      headerContent={renderTabs()}
+                   />
+               </div>
+            )}
       </main>
 
-      {/* FOOTER */}
       <footer className="max-w-7xl mx-auto px-6 py-8 border-t border-slate-200 flex justify-between items-center text-slate-400 text-xs mt-8">
           <div>© 2024 WealthDash. Secure & Local.</div>
           <button onClick={handleResetData} className="flex items-center gap-1 hover:text-red-500 transition-colors"><RotateCcw size={12} /> Clear Data</button>

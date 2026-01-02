@@ -1,6 +1,13 @@
 export enum Currency {
+  HKD = 'HKD',
   CNY = 'CNY',
-  HKD = 'HKD'
+  USD = 'USD',
+  JPY = 'JPY',
+  EUR = 'EUR',
+  GBP = 'GBP',
+  AUD = 'AUD',
+  CAD = 'CAD',
+  SGD = 'SGD'
 }
 
 export enum AccountType {
@@ -8,6 +15,22 @@ export enum AccountType {
   INVESTMENT = 'Investment',
   WALLET = 'Digital Wallet',
   PERSONAL = 'Personal/Other'
+}
+
+export enum ExpenseCategory {
+  DINING = 'Dining',
+  GROCERIES = 'Groceries',
+  TRANSPORT = 'Transport',
+  SHOPPING = 'Shopping',
+  HOUSING = 'Housing',
+  UTILITIES = 'Utilities',
+  BILLS = 'Bills',
+  ENTERTAINMENT = 'Entertainment',
+  HEALTH = 'Health',
+  TRANSFER = 'Transfer',
+  INCOME = 'Income',
+  INVESTMENT = 'Investment',
+  OTHER = 'Other'
 }
 
 export interface Account {
@@ -19,5 +42,13 @@ export interface Account {
   icon?: string;
 }
 
-// Pre-populated accounts - set to empty as requested
+export interface Transaction {
+  id: string;
+  date: string;
+  description: string;
+  category: ExpenseCategory;
+  amount: number;
+}
+
+// Pre-populated accounts
 export const INITIAL_ACCOUNTS: Account[] = [];

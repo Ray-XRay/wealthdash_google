@@ -162,12 +162,12 @@ export const ExcelGenerator: React.FC<ExcelGeneratorProps> = ({ rateCNYtoHKD, on
             balanceIdx = rawData[startRow + 1].findIndex((c: any) => typeof cleanAmount(c) === 'number' && cleanAmount(c) > 0);
         }
 
-        parsedAccounts = rawData.slice(startRow + 1).map((row, idx) => {
+        parsedAccounts = rawData.slice(startRow + 1).map((row, idx): Account | null => {
             if (!row || !row[nameIdx]) return null;
             const name = String(row[nameIdx]).trim();
             const bal = cleanAmount(row[balanceIdx]);
             if (!name || bal <= 0) return null;
-            let cur = Currency.HKD;
+            let cur: Currency = Currency.HKD;
             const curStr = currencyIdx !== -1 ? String(row[currencyIdx]).toUpperCase() : '';
             const context = (name + curStr + String(row[balanceIdx] || '')).toUpperCase();
             if (/CNY|RMB|CNH|人民币|¥/.test(context) && !/HKD|HK|港币/.test(context.replace(/CNY|RMB|人民币|¥/,''))) cur = Currency.CNY;
