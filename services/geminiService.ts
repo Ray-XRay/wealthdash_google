@@ -210,49 +210,72 @@ export const smartParseDocument = async (base64Images: string[]): Promise<SmartP
     required: ["accounts", "transactions"]
   };
 
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview', 
-      contents: { parts },
-      config: { 
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        thinkingConfig: { thinkingBudget: 4096 } 
+  let lastError;
+  const maxRetries = 3;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview', 
+          contents: { parts },
+          config: { 
+            responseMimeType: "application/json",
+            responseSchema: responseSchema,
+            thinkingConfig: { thinkingBudget: 2048 } 
+          }
+        });
+
+        const jsonText = response.text || "{}";
+        const data = JSON.parse(jsonText);
+        
+        // Process Accounts
+        let processedAccounts: Partial<Account>[] = [];
+        if (Array.isArray(data.accounts)) {
+            processedAccounts = data.accounts.map((acc: any) => ({
+                name: acc.name || "Unknown Account",
+                balance: acc.balance || 0,
+                currency: (Object.values(Currency).includes(acc.currency) ? acc.currency : Currency.HKD),
+                type: (Object.values(AccountType).includes(acc.type) ? acc.type : AccountType.BANK) as AccountType
+            })).filter((a: any) => a.balance !== 0);
+        }
+
+        // Process Transactions
+        let processedTransactions: Transaction[] = [];
+        if (Array.isArray(data.transactions)) {
+            processedTransactions = data.transactions.map((t: any, idx: number) => ({
+                id: `tx-${Date.now()}-${idx}`,
+                date: t.date || new Date().toISOString().split('T')[0],
+                description: t.description || "Unknown",
+                category: Object.values(ExpenseCategory).includes(t.category) ? t.category : ExpenseCategory.OTHER,
+                amount: t.amount || 0
+            }));
+        }
+
+        return { accounts: processedAccounts, transactions: processedTransactions };
+
+      } catch (error: any) {
+        lastError = error;
+        console.warn(`Attempt ${attempt + 1} failed:`, error);
+        
+        const isQuotaError = error.status === 429 || error.code === 429 || 
+                             error.message?.includes('429') || error.message?.includes('quota') || 
+                             error.message?.includes('RESOURCE_EXHAUSTED');
+        
+        if (isQuotaError && attempt < maxRetries - 1) {
+            // Wait 2s, 4s...
+            await new Promise(resolve => setTimeout(resolve, 2000 * Math.pow(2, attempt)));
+            continue;
+        }
+        break;
       }
-    });
-
-    const jsonText = response.text || "{}";
-    const data = JSON.parse(jsonText);
-    
-    // Process Accounts
-    let processedAccounts: Partial<Account>[] = [];
-    if (Array.isArray(data.accounts)) {
-        processedAccounts = data.accounts.map((acc: any) => ({
-            name: acc.name || "Unknown Account",
-            balance: acc.balance || 0,
-            currency: (Object.values(Currency).includes(acc.currency) ? acc.currency : Currency.HKD),
-            type: (Object.values(AccountType).includes(acc.type) ? acc.type : AccountType.BANK) as AccountType
-        })).filter((a: any) => a.balance !== 0);
-    }
-
-    // Process Transactions
-    let processedTransactions: Transaction[] = [];
-    if (Array.isArray(data.transactions)) {
-        processedTransactions = data.transactions.map((t: any, idx: number) => ({
-            id: `tx-${Date.now()}-${idx}`,
-            date: t.date || new Date().toISOString().split('T')[0],
-            description: t.description || "Unknown",
-            category: Object.values(ExpenseCategory).includes(t.category) ? t.category : ExpenseCategory.OTHER,
-            amount: t.amount || 0
-        }));
-    }
-
-    return { accounts: processedAccounts, transactions: processedTransactions };
-
-  } catch (error: any) {
-    console.error("Smart parsing failed:", error);
-    // Directly propagate the error message to the UI
-    const errorDetails = error.message || error.toString();
-    throw new Error(`${errorDetails}`);
   }
+
+  console.error("Smart parsing failed:", lastError);
+  const errorDetails = lastError?.message || lastError?.toString();
+  
+  if (errorDetails.includes('429') || errorDetails.includes('quota') || errorDetails.includes('RESOURCE_EXHAUSTED')) {
+      throw new Error("API Limit Exceeded. Please wait a moment and try again.");
+  }
+
+  throw new Error(`${errorDetails}`);
 };
